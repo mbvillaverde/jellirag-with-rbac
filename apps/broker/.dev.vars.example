@@ -1,0 +1,3 @@
+# Example local secrets for `wrangler dev`. NEVER commit real values.
+# Real BROKER_SECRET is provisioned via `wrangler secret put` (task 2.4).
+BROKER_SECRET="dev-only-not-a-real-secret"

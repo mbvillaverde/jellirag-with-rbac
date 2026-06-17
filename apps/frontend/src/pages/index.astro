@@ -1,0 +1,11 @@
+---
+import Layout from '../layouts/Layout.astro'
+import Chat from '../components/Chat.vue'
+
+// Per-deployment Tailscale/MagicDNS base, injected at build time (no hardcoded
+// localhost). Empty => chips render without a resolvable link.
+const deeplinkBase = import.meta.env.PUBLIC_DEEPLINK_BASE ?? ''
+---
+<Layout title="JellieRAG — chat">
+  <Chat client:load deeplinkBase={deeplinkBase} />
+</Layout>
