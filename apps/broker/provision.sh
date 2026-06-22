@@ -16,19 +16,19 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "== 2.1 Creating Vectorize index (384-dim cosine) =="
-wrangler vectorize create jellyfin-index --dimensions=384 --metric=cosine || true
+npx wrangler vectorize create jellyfin-index --dimensions=384 --metric=cosine || true
 
 echo "== 2.2 Creating D1 database 'jellyrag' =="
 # Capture the database_id; paste it into wrangler.jsonc after creation.
-wrangler d1 create jellyrag || true
+npx wrangler d1 create jellyrag || true
 echo "  -> Copy the printed database_id into wrangler.jsonc (DB binding)."
 
 echo "== 2.3 Applying initial schema to remote D1 =="
-wrangler d1 execute jellyrag --remote --file=migrations/0001_initial_schema.sql
+npx wrangler d1 execute jellyrag --remote --file=migrations/0001_initial_schema.sql
 
 echo "== 2.4 Provisioning BROKER_SECRET (will prompt; never echo to source) =="
 echo "  Generate one with: openssl rand -base64 32"
-wrangler secret put BROKER_SECRET
+npx wrangler secret put BROKER_SECRET
 
 echo "== 2.5 Verify the Llama model slug in the Workers AI catalog =="
 echo "  Confirm @cf/meta/llama-3.1-8b-instruct-fast exists and read its"

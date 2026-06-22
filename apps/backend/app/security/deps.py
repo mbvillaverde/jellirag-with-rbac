@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -81,7 +81,7 @@ def require_role(min_role: str):
 # ---- per-email login rate limiting (compensates for no CF Access shielding) ----
 @dataclass
 class _Bucket:
-    failures: list[float]
+    failures: list[float] = field(default_factory=list)
 
 
 class LoginRateLimiter:

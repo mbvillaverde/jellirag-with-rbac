@@ -1,28 +1,30 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "broker",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-06-16",
-  "ai": {
-    "binding": "AI"
-  },
-  "vectorize": [
-    {
-      "binding": "INDEX",
-      "index_name": "jellyfin-index"
-    }
-  ],
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "jellyrag",
-      // Filled in by `wrangler d1 create jellyrag` (operator step 2.2).
-      // Do NOT commit a real id; it is not secret but is deployment-specific.
-      "database_id": ""
-    }
-  ],
-  "observability": {
-    "enabled": true,
-    "head_sampling_rate": 1
-  }
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "broker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-06-16",
+	"ai": {
+		"binding": "AI"
+	},
+	"vectorize": [
+		{
+			"binding": "INDEX",
+			"index_name": "jellyfin-index",
+			"remote": true
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "jellyrag",
+			// Filled in by `wrangler d1 create jellyrag` (operator step 2.2).
+			// Do NOT commit a real id; it is not secret but is deployment-specific.
+			"database_id": "",
+			"remote": true
+		}
+	],
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	}
 }

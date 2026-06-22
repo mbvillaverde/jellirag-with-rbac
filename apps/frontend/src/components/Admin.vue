@@ -8,6 +8,24 @@
       </div>
     </div>
 
+    <section class="admin__sync">
+      <button class="btn btn--primary" :disabled="syncing" @click="sync">
+        {{ syncing ? 'Syncing…' : 'Sync library' }}
+      </button>
+      <p class="admin__sync-summary" v-if="syncSummary">
+        Added {{ syncSummary.added }}, updated {{ syncSummary.updated }},
+        unchanged {{ syncSummary.unchanged }}, removed {{ syncSummary.removed }}
+        ({{ syncSummary.total }} total)
+      </p>
+      <p class="admin__sync-note" v-if="syncSummary && (syncSummary.added || syncSummary.updated)">
+        New vectors may take a few seconds to become searchable.
+      </p>
+      <ul class="admin__sync-errors" v-if="syncSummary && syncSummary.errors.length">
+        <li v-for="(e, i) in syncSummary.errors" :key="i">{{ e }}</li>
+      </ul>
+      <p class="admin__error" v-if="syncError">{{ syncError }}</p>
+    </section>
+
     <p class="admin__error" v-if="error">{{ error }}</p>
 
     <form class="admin__form" @submit.prevent="create">
@@ -44,12 +62,23 @@ import { ref, onMounted } from 'vue'
 import { api, clearSession, ApiError } from '../lib/auth'
 
 interface User { email: string; role: string; created_at: string }
+interface SyncSummary {
+  total: number
+  added: number
+  updated: number
+  unchanged: number
+  removed: number
+  errors: string[]
+}
 
 const users = ref<User[]>([])
 const error = ref('')
 const newEmail = ref('')
 const newPassword = ref('')
 const newRole = ref('member')
+const syncing = ref(false)
+const syncSummary = ref<SyncSummary | null>(null)
+const syncError = ref('')
 
 onMounted(load)
 
@@ -64,6 +93,25 @@ async function load() {
     } else {
       error.value = 'Could not load users.'
     }
+  }
+}
+
+async function sync() {
+  syncing.value = true
+  syncError.value = ''
+  syncSummary.value = null
+  try {
+    syncSummary.value = await api<SyncSummary>('/api/sync', { method: 'POST' })
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 503) {
+      syncError.value = 'Sync failed: embedding service busy. Try again shortly.'
+    } else if (e instanceof ApiError && e.status === 502) {
+      syncError.value = 'Sync failed: broker error.'
+    } else {
+      syncError.value = 'Sync failed.'
+    }
+  } finally {
+    syncing.value = false
   }
 }
 
@@ -116,6 +164,10 @@ function shortDate(iso: string) { try { return new Date(iso).toLocaleDateString(
 .admin__head h1 { font-size: 1.25rem; margin: 0; }
 .admin__actions { display: flex; gap: .5rem; }
 .admin__error { color: #dc2626; }
+.admin__sync { display: flex; flex-direction: column; gap: .4rem; margin: 1rem 0; padding: 1rem; border: 1px solid #e2e8f0; border-radius: 10px; }
+.admin__sync-summary { margin: 0; color: #0f172a; font-weight: 600; }
+.admin__sync-note { margin: 0; color: #64748b; font-size: .85rem; }
+.admin__sync-errors { margin: 0; padding-left: 1.25rem; color: #dc2626; }
 .admin__form { display: flex; gap: .5rem; margin: 1rem 0; flex-wrap: wrap; }
 .admin__form input, .admin__form select { padding: .5rem; border-radius: 8px; border: 1px solid #cbd5e1; font: inherit; }
 .admin__table { width: 100%; border-collapse: collapse; }
