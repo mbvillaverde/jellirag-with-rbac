@@ -1,20 +1,9 @@
-# Dokploy stack: Astro frontend (:3000) + FastAPI backend (:8000) behind Traefik.
-# TLS termination, HTTP->HTTPS redirect, and routing are handled by the
-# Dokploy-managed Traefik. Cloudflare credentials NEVER appear here — only the
-# Jellyfin key, broker secret, deeplink base, JWT secret, and bootstrap admin.
+# Local LXC deployment: Astro frontend (:3000) + FastAPI backend (:8000)
+# Exposed via tailscale serve with auto-issued Let's Encrypt certs.
+# No public ingress, no Traefik, no Cloudflare dependencies.
 #
-# Secrets are injected via Dokploy encrypted environment configuration.
-# The operator fills in real values in the Dokploy UI; placeholders below show
-# the required shape and MUST be overridden at deploy time.
-#
-# Frontend public host: e.g. app.example.com
-# Backend public host : e.g. api.example.com  (frontend calls it via /api/* or CORS origin)
-
-x-traefik-labels: &traefik-enable
-  traefik.enable: "true"
-  traefik.http.routers.${ROUTER_KEY}.entrypoints: "websecure"
-  traefik.http.routers.${ROUTER_KEY}.tls: "true"
-  traefik.http.routers.${ROUTER_KEY}.tls.certresolver: "letsencrypt"
+# All state lives in a single SQLite database mounted as a volume.
+# AI providers are OpenAI-compatible HTTP endpoints (default: Ollama on MacBook over Tailscale).
 
 services:
   frontend:
@@ -25,52 +14,54 @@ services:
       - NODE_ENV=production
       - HOST=0.0.0.0
       - PORT=3000
-      # Public origin the browser uses for /api/chat/stream (relative by default).
+      # Relative endpoint; frontend calls backend at same origin
       - CHAT_ENDPOINT_URL=/api/chat/stream
-      - PUBLIC_API_BASE=${PUBLIC_API_BASE}
       - PUBLIC_DEEPLINK_BASE=${PUBLIC_DEEPLINK_BASE}
     expose:
       - "3000"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.frontend.rule=Host(`${FRONTEND_HOST}`)"
-      - "traefik.http.routers.frontend.entrypoints=websecure"
-      - "traefik.http.routers.frontend.tls=true"
-      - "traefik.http.routers.frontend.tls.certresolver=letsencrypt"
-      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
-      # HTTP -> HTTPS redirect on the plaintext entrypoint.
-      - "traefik.http.routers.frontend-insecure.rule=Host(`${FRONTEND_HOST}`)"
-      - "traefik.http.routers.frontend-insecure.entrypoints=web"
-      - "traefik.http.routers.frontend-insecure.middlewares=https-redirect@docker"
-      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
-      - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
 
   backend:
     build:
       context: ../apps/backend
     restart: unless-stopped
     environment:
-      - BROKER_URL=${BROKER_URL}
-      - BROKER_SECRET=${BROKER_SECRET}
+      # AI providers (OpenAI-compatible)
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=${LLM_MODEL}
+      - EMBED_BASE_URL=${EMBED_BASE_URL}
+      - EMBED_API_KEY=${EMBED_API_KEY}
+      - EMBED_MODEL=${EMBED_MODEL}
+      - EMBED_DIM=${EMBED_DIM:-768}
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-5}
+      
+      # Database
+      - SQLITE_PATH=/var/jellirag/jellyrag.db
+      
+      # Sync service
+      - SYNC_EMBED_CONCURRENCY=${SYNC_EMBED_CONCURRENCY:-4}
+      
+      # Homelab overlay (Tailscale-only)
       - JELLYFIN_TAILSCALE_URL=${JELLYFIN_TAILSCALE_URL}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY}
       - JELLYFIN_DEEPLINK_BASE=${JELLYFIN_DEEPLINK_BASE}
+      
+      # Conversation lifecycle
       - SESSION_TTL_DAYS=${SESSION_TTL_DAYS:-30}
+      
+      # Auth perimeter
       - JWT_SECRET=${JWT_SECRET}
       - JWT_TTL_DAYS=${JWT_TTL_DAYS:-7}
-      - FRONTEND_ORIGIN=${FRONTEND_ORIGIN}
       - BOOTSTRAP_ADMIN_EMAIL=${BOOTSTRAP_ADMIN_EMAIL}
       - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD}
+      
+      # CORS (should match tailscale serve URL)
+      - FRONTEND_ORIGIN=${FRONTEND_ORIGIN}
+      
+      # Sync schedule (cron)
       - SYNC_CRON=${SYNC_CRON:-0 3 * * *}
     expose:
       - "8000"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=Host(`${BACKEND_HOST}`)"
-      - "traefik.http.routers.backend.entrypoints=websecure"
-      - "traefik.http.routers.backend.tls=true"
-      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
-      - "traefik.http.services.backend.loadbalancer.server.port=8000"
-      - "traefik.http.routers.backend-insecure.rule=Host(`${BACKEND_HOST}`)"
-      - "traefik.http.routers.backend-insecure.entrypoints=web"
-      - "traefik.http.routers.backend-insecure.middlewares=https-redirect@docker"
+    volumes:
+      # Bind mount for persistent SQLite database
+      - ${SQLITE_VOLUME_PATH:-/var/jellirag}:/var/jellirag

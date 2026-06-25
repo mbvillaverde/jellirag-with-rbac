@@ -2,9 +2,8 @@
 
 Two-way diff against `sync_state`: embed + upsert only new/changed items,
 delete vectors + chunks for removed items, and skip unchanged items. Fails
-fast (no partial Vectorize/D1 mutation) if Jellyfin is unreachable over
-Tailscale. Processes in streamed batches so peak RAM stays < 1GB at 5,000 items
-(tasks 5.1-5.7, 5.9, 5.10).
+fast (no partial SQLite mutation) if Jellyfin is unreachable over Tailscale.
+Processes in streamed batches so peak RAM stays < 1GB at 5,000 items.
 """
 from __future__ import annotations
 
@@ -12,15 +11,15 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from ..services.broker_client import BrokerClient, BrokerError
+from ..services.ai_provider import AIProviderError, EmbeddingsClient
+from ..services.db import Database
 from ..services.jellyfin_client import JellyfinClient, JellyfinUnreachable
 from ..services.chunks import item_to_chunk
 
 log = logging.getLogger("jellirag.sync")
 
-EMBED_BATCH = 50          # texts per /embed call
-EMBED_CONCURRENCY = 5     # bounded concurrency under the ~3,000 req/min ceiling
-INGEST_BATCH = 50         # items per /ingest/upsert call
+EMBED_BATCH = 50          # texts per embed call
+INGEST_BATCH = 50         # items per batch write
 
 
 @dataclass
@@ -48,25 +47,31 @@ class SyncFailed(RuntimeError):
 
 
 async def run_library_sync(
-    broker: BrokerClient,
+    embed: EmbeddingsClient,
+    db: Database,
     jellyfin: JellyfinClient,
 ) -> SyncSummary:
     summary = SyncSummary()
 
-    # 5.1 — fail fast on unreachable; no partial mutation.
+    # Fail fast on unreachable; no partial mutation.
     await jellyfin.check_reachable()
     items = await jellyfin.library_items()
     summary.total = len(items)
 
-    # Synthesize chunks (streaming-friendly; bounded text size via 5.9).
+    # Synthesize chunks (streaming-friendly; bounded text size).
     chunks = [item_to_chunk(it) for it in items if it.get("Id")]
     jellyfin_ids = {c["jf_id"] for c in chunks}
     by_id = {c["jf_id"]: c for c in chunks}
 
-    # 5.2 — two-way diff.
-    known_rows = await broker.sync_state_get()
-    known_active = {r["jf_id"]: r for r in known_rows if r.get("deleted_at") is None}
-    known_active_ids = set(known_active.keys())
+    # Two-way diff: fetch sync_state directly from SQLite
+    conn = await db.get_connection()
+    try:
+        cursor = await conn.execute("SELECT jf_id, content_hash FROM sync_state")
+        known_rows = await cursor.fetchall()
+        known_active = {row[0]: {"jf_id": row[0], "content_hash": row[1]} for row in known_rows}
+        known_active_ids = set(known_active.keys())
+    finally:
+        await db.return_connection(conn)
 
     to_add = jellyfin_ids - known_active_ids
     to_remove = known_active_ids - jellyfin_ids
@@ -77,30 +82,35 @@ async def run_library_sync(
     }
     unchanged = (jellyfin_ids & known_active_ids) - to_update
 
-    summary.unchanged = len(unchanged)  # no embedding for these (5.8 steady-state)
+    summary.unchanged = len(unchanged)  # no embedding for these (steady-state)
 
-    # 5.3 + 5.10 — embed to_add + to_update with bounded concurrency + 429 backoff.
-    sem = asyncio.Semaphore(EMBED_CONCURRENCY)
+    # Embed to_add + to_update (bounded concurrency + 429 backoff handled by EmbeddingsClient).
     to_process = sorted(to_add | to_update, key=lambda j: by_id[j]["title"])
     state_upserts: list[dict] = []
 
     for batch_start in range(0, len(to_process), EMBED_BATCH):
         batch_ids = to_process[batch_start : batch_start + EMBED_BATCH]
         batch_chunks = [by_id[jid] for jid in batch_ids]
-        vectors = await _embed_with_backoff(broker, sem, [c["chunk_text"] for c in batch_chunks])
+        try:
+            vectors = await embed.embed([c["chunk_text"] for c in batch_chunks])
+        except AIProviderError as exc:
+            raise SyncFailed(f"embed failed: {exc.message}")
 
-        ingest_items = []
         for chunk, vec in zip(batch_chunks, vectors):
-            ingest_items.append({**chunk, "vector": vec})
+            # Write to chunks + vec_chunks in a single transaction
+            await db.chunk_upsert_with_vector(
+                jf_id=chunk["jf_id"],
+                chunk_text=chunk["chunk_text"],
+                embedding=vec,
+                title=chunk.get("title"),
+                year=chunk.get("year"),
+                genres=chunk.get("genres"),
+            )
             state_upserts.append({
                 "jf_id": chunk["jf_id"],
                 "content_hash": chunk["content_hash"],
-                "jellyfin_updated_at": _to_iso(by_id[chunk["jf_id"]]),
+                "synced_at": _to_iso(by_id[chunk["jf_id"]]),
             })
-
-        # 5.3 — batched upsert (Vectorize + D1).
-        for i in range(0, len(ingest_items), INGEST_BATCH):
-            await broker.ingest_upsert(ingest_items[i : i + INGEST_BATCH])
 
         for jid in batch_ids:
             if jid in to_add:
@@ -108,42 +118,34 @@ async def run_library_sync(
             else:
                 summary.updated += 1
 
-    # 5.4 — delete removed items (vectors + chunks) and tombstone sync_state.
+    # Delete removed items (vectors + chunks) and update sync_state.
     if to_remove:
         removed = list(to_remove)
-        for i in range(0, len(removed), INGEST_BATCH):
-            await broker.ingest_delete(removed[i : i + INGEST_BATCH])
         for jid in removed:
+            await db.chunk_delete_with_vector(jid)
             state_upserts.append({"jf_id": jid, "deleted": True})
         summary.removed = len(removed)
 
-    # 5.5 — update sync_state hashes + timestamps for processed items.
-    for i in range(0, len(state_upserts), 100):
-        await broker.sync_state_put(state_upserts[i : i + 100])
+    # Update sync_state hashes + timestamps for processed items.
+    conn = await db.get_connection()
+    try:
+        await conn.execute("BEGIN")
+        for item in state_upserts:
+            if item.get("deleted"):
+                await conn.execute("DELETE FROM sync_state WHERE jf_id = ?", (item["jf_id"],))
+            else:
+                await conn.execute("""
+                    INSERT OR REPLACE INTO sync_state (jf_id, content_hash, synced_at)
+                    VALUES (?, ?, ?)
+                """, (item["jf_id"], item["content_hash"], item.get("synced_at")))
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    finally:
+        await db.return_connection(conn)
 
     return summary
-
-
-async def _embed_with_backoff(
-    broker: BrokerClient, sem: asyncio.Semaphore, texts: list[str]
-) -> list[list[float]]:
-    last_exc: Exception | None = None
-    for attempt in range(5):
-        async with sem:
-            try:
-                return await broker.embed(texts)
-            except BrokerError as exc:
-                last_exc = exc
-                if exc.status == 429:
-                    await asyncio.sleep(min(2 ** attempt, 16))
-                    continue
-                raise
-            except Exception as exc:
-                last_exc = exc
-                raise
-    if last_exc:
-        raise SyncFailed(f"embed rate-limited after retries: {last_exc}")
-    return []
 
 
 def _to_iso(chunk: dict) -> str | None:

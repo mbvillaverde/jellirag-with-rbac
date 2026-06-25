@@ -9,36 +9,46 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..config.settings import Settings, get_settings
-from ..security.deps import Principal, get_broker, get_jellyfin, require_role
-from ..services.broker_client import BrokerClient, BrokerError
+from ..security.deps import Principal, get_jellyfin, require_role
+from ..services.ai_provider import EmbeddingsClient
+from ..services.db import Database
 from ..services.jellyfin_client import JellyfinClient
 from ..services.sync_service import SyncFailed, run_library_sync
 
 router = APIRouter(tags=["ops"])
 
 
+def get_embed(request: Request) -> EmbeddingsClient:
+    return request.app.state.embed
+
+
+def get_db(request: Request) -> Database:
+    return request.app.state.db
+
+
 @router.post("/sync")
 async def trigger_sync(
     principal: Principal = Depends(require_role("admin")),
-    broker: BrokerClient = Depends(get_broker),
+    embed: EmbeddingsClient = Depends(get_embed),
+    db: Database = Depends(get_db),
     jellyfin: JellyfinClient = Depends(get_jellyfin),
 ) -> dict[str, Any]:
     try:
-        summary = await run_library_sync(broker, jellyfin)
+        summary = await run_library_sync(embed, db, jellyfin)
     except SyncFailed as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc))
-    except BrokerError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"broker error: {exc.message}")
+    except Exception as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"sync error: {exc}")
     return summary.as_dict()
 
 
 @router.post("/sessions/prune")
 async def prune_sessions(
     principal: Principal = Depends(require_role("admin")),
-    broker: BrokerClient = Depends(get_broker),
+    db: Database = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, int]:
     # 0 disables pruning (retain forever).
@@ -46,6 +56,6 @@ async def prune_sessions(
         return {"deleted_sessions": 0, "deleted_messages": 0, "note": "prune disabled (TTL=0)"}
     older_than = (datetime.now(timezone.utc) - timedelta(days=settings.session_ttl_days)).isoformat()
     try:
-        return await broker.sessions_prune(older_than)
-    except BrokerError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"broker error: {exc.message}")
+        return await db.sessions_prune(older_than)
+    except Exception as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"prune error: {exc}")

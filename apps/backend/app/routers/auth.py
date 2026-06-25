@@ -1,8 +1,8 @@
 """Login endpoint (capability: auth).
 
-Issues a role-bearing JWT after email/password verification against the D1
-users table (via the broker). Password verification happens locally in FastAPI
-(argon2id); the broker stores/returns only the opaque hash.
+Issues a role-bearing JWT after email/password verification against the SQLite
+users table. Password verification happens locally in FastAPI (argon2id);
+the database stores only the opaque hash.
 
 The 401 response shape and timing are identical for unknown-user vs
 wrong-password: when the user is absent we still perform a dummy argon2 verify
@@ -10,14 +10,20 @@ so the response time matches a real verification.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel, EmailStr, Field
 
 from ..config.settings import Settings, get_settings
 from ..security.deps import LoginRateLimiter, get_rate_limiter
 from ..security.jwt import issue_token
 from ..security.passwords import _hasher, verify_password
-from ..services.broker_client import BrokerClient, BrokerError
-from ..security.deps import get_broker
+from ..services.db import Database
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+
 
 router = APIRouter(tags=["auth"])
 
@@ -40,26 +46,29 @@ def _reject() -> HTTPException:
     return HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
 
 
+def get_db(request: Request) -> Database:
+    return request.app.state.db
+
+
 @router.post("/auth/login")
 async def login(
-    body: dict,
+    body: LoginRequest,
     response: Response,
     settings: Settings = Depends(get_settings),
-    broker: BrokerClient = Depends(get_broker),
+    db: Database = Depends(get_db),
     limiter: LoginRateLimiter = Depends(get_rate_limiter),
 ) -> dict:
-    email = str(body.get("email", "")).strip().lower()
-    password = str(body.get("password", ""))
+    email = body.email.strip().lower()
+    password = body.password
     if not email or not password:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "email and password required")
 
     if limiter.is_limited(email):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "too many attempts")
 
-    user = None
     try:
-        user = await broker.users_lookup(email)
-    except BrokerError:
+        user = await db.users_lookup(email)
+    except Exception:
         limiter.record_failure(email)
         raise _reject()
 

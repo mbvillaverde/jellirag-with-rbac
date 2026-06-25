@@ -17,11 +17,32 @@
           <span
             v-for="jf in m.sources"
             :key="jf"
-            class="chip"
+            class="chip chip--rich"
             :title="`Requires Tailscale — opens at ${deeplinkBase}`"
           >
-            <a :href="chipLink(jf)" target="_blank" rel="noopener noreferrer">{{ jf }}</a>
-            <span class="chip__hint">needs Tailscale</span>
+            <a class="chip__main" :href="chipLink(jf)" target="_blank" rel="noopener noreferrer">
+              <span class="chip__image">
+                <img
+                  v-if="getMetadata(jf).image_url && !imgFailed[jf]"
+                  :src="imgSrc(jf)"
+                  :alt="getMetadata(jf).title || jf"
+                  loading="lazy"
+                  @error="imgFailed[jf] = true"
+                />
+                <span v-else class="chip__icon" aria-hidden="true">🎬</span>
+              </span>
+              <span class="chip__meta" v-if="hasMetadata(jf)">
+                <span class="chip__title">{{ getMetadata(jf).title || jf }}</span>
+                <span class="chip__sub">
+                  <span class="chip__year" v-if="getMetadata(jf).year">{{ getMetadata(jf).year }}</span>
+                  <span class="chip__genres" v-if="getMetadata(jf).genres">{{ getMetadata(jf).genres }}</span>
+                </span>
+              </span>
+              <span class="chip__meta" v-else>
+                <span class="chip__title">{{ jf }}</span>
+              </span>
+            </a>
+            <span class="chip__hint">needs Tailscale →</span>
           </span>
         </div>
       </div>
@@ -52,6 +73,13 @@ import { API_BASE, getToken, getRole, clearSession, authHeaders, requireAuth } f
 const props = defineProps<{ deeplinkBase: string }>()
 const deeplinkBase = props.deeplinkBase
 
+interface SourceMeta {
+  title?: string
+  year?: number
+  genres?: string
+  image_url?: string
+}
+
 interface Msg {
   role: 'user' | 'assistant'
   content: string
@@ -65,6 +93,12 @@ const scrollEl = ref<HTMLElement | null>(null)
 const streamingAssistant = ref('')
 const sessionId = ref(crypto.randomUUID())
 const role = ref<string | null>(null)
+
+// Rich-chip metadata keyed by jf_id. Metadata is immutable per item, so a single
+// accumulating map is shared across all messages. `imgFailed` tracks per-id
+// graceful-degradation state so a broken thumbnail falls back to a film icon.
+const sourceMetadata = ref<Record<string, SourceMeta>>({})
+const imgFailed = ref<Record<string, boolean>>({})
 
 onMounted(() => {
   if (!requireAuth()) return
@@ -88,6 +122,27 @@ function logout() {
 
 function chipLink(jfId: string): string {
   return `${deeplinkBase.replace(/\/$/, '')}/web/index.html#/details?id=${jfId}`
+}
+
+// Metadata for a cited item, or an empty object (drives fallback rendering).
+function getMetadata(jfId: string): SourceMeta {
+  return sourceMetadata.value[jfId] ?? {}
+}
+
+// True if we have any of title/year/genres to render as text.
+function hasMetadata(jfId: string): boolean {
+  const m = getMetadata(jfId)
+  return Boolean(m.title || m.year || m.genres)
+}
+
+// Absolute image URL with auth token. `<img>` cannot set Authorization headers,
+// so the token is passed via the query string (the backend accepts ?token=).
+function imgSrc(jfId: string): string {
+  const meta = getMetadata(jfId)
+  const base = meta.image_url ?? `/api/jellyfin/image?id=${jfId}`
+  const url = `${API_BASE}${base}`
+  const token = getToken()
+  return token ? `${url}&token=${encodeURIComponent(token)}` : url
 }
 
 // Escape HTML, then re-introduce safe anchor tags for markdown links and bare
@@ -170,6 +225,12 @@ async function send() {
           }
           if (Array.isArray(data.sources)) {
             sources = data.sources
+            // Merge per-source metadata (title/year/genres/image_url) for rich
+            // chips. Metadata is immutable per jf_id, so a shallow merge keeps
+            // earlier values intact while filling in newly-cited items.
+            if (data.source_metadata && typeof data.source_metadata === 'object') {
+              sourceMetadata.value = { ...sourceMetadata.value, ...data.source_metadata }
+            }
           } else if (typeof data.response === 'string') {
             assembled += data.response
             streamingAssistant.value = assembled
@@ -208,6 +269,70 @@ async function send() {
 .chip { font-size: .7rem; background: rgba(255,255,255,.2); border-radius: 999px; padding: .1rem .5rem; display: inline-flex; align-items: center; gap: .3rem; }
 .msg--assistant .chip { background: #e2e8f0; color: #334155; }
 .chip__hint { opacity: .6; font-size: .6rem; }
+
+/* Rich chips: thumbnail | metadata, horizontal media-card layout. */
+.chip--rich {
+  align-items: stretch;
+  border-radius: 8px;
+  padding: .25rem;
+  max-width: 100%;
+}
+.chip__main {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  text-decoration: none;
+  color: inherit;
+  min-width: 0;
+}
+.chip__image {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 42px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: rgba(0,0,0,.12);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.chip__image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.chip__icon { font-size: .9rem; line-height: 1; }
+.chip__meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 180px;
+  line-height: 1.2;
+}
+.chip__title {
+  font-weight: 600;
+  font-size: .72rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip__sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .25rem;
+  font-size: .6rem;
+  opacity: .75;
+  margin-top: .05rem;
+}
+.chip__year { font-variant-numeric: tabular-nums; }
+.chip__genres {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Assistant (light) chip color overrides. */
+.msg--assistant .chip__image { background: #cbd5e1; }
 .chat__input { display: flex; gap: .5rem; padding: .5rem 0; }
 .chat__input textarea { flex: 1; resize: none; height: 3rem; padding: .6rem; border-radius: 10px; border: 1px solid #cbd5e1; font: inherit; }
 .btn { border: 1px solid transparent; border-radius: 10px; padding: .5rem .85rem; cursor: pointer; font: inherit; background: #fff; color: #0f172a; }

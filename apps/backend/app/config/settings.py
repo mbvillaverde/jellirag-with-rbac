@@ -1,8 +1,7 @@
-"""Application configuration loaded from Dokploy encrypted environment.
+"""Application configuration loaded from environment.
 
-No Cloudflare credential lives here (or on the VPS). Only the Jellyfin key, the
-single broker pre-shared secret, the deeplink base, the JWT secret, and the
-one-shot bootstrap-admin env are present at runtime.
+All AI providers are OpenAI-compatible HTTP endpoints. No Cloudflare credentials are present.
+All data is stored in a local SQLite database with sqlite-vec for vector search.
 """
 from __future__ import annotations
 
@@ -14,9 +13,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
 
-    # ---- broker boundary (the only path to Cloudflare) ----
-    broker_url: str
-    broker_secret: str
+    # ---- AI providers (OpenAI-compatible) ----
+    llm_base_url: str
+    llm_api_key: str
+    llm_model: str
+    embed_base_url: str
+    embed_api_key: str
+    embed_model: str
+    embed_dim: int = 768
+    llm_timeout_seconds: int = 5
+
+    # ---- database ----
+    sqlite_path: str = "/var/jellirag/jellyrag.db"
+
+    # ---- sync service ----
+    sync_embed_concurrency: int = 4
 
     # ---- homelab overlay (Tailscale-only) ----
     jellyfin_tailscale_url: str

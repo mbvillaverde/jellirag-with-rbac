@@ -1,20 +1,20 @@
 """Chunk synthesis + content hashing (capability: library-sync).
 
 Builds a normalized `chunk_text` from a Jellyfin item and a `sha256` content
-hash used by the incremental two-way diff. Vector metadata is slimmed to
-{jf_id,title,year,genre} by the broker; full text lives in D1.
+hash used by the incremental two-way diff. Full text lives in SQLite with
+vector metadata in vec_chunks.
 
 Parsing of `People`/`Genres` is defensive (shapes vary across Jellyfin
 versions): actors are filtered by `Type == "Actor"` and capped, missing fields
 are tolerated. `chunk_text` is bounded to the embedding model's ~512-token
-input (~2KB) so `/embed` never receives oversized input (task 5.9).
+input (~2KB) so embed calls never receive oversized input.
 """
 from __future__ import annotations
 
 import hashlib
 from typing import Any
 
-MAX_CHUNK_CHARS = 2048  # ~512 tokens @ ~4 chars/token (bge-small-en input)
+MAX_CHUNK_CHARS = 2048  # ~512 tokens @ ~4 chars/token (nomic-embed-text input)
 
 
 def _genres(item: dict[str, Any]) -> str:
@@ -61,7 +61,7 @@ def synthesize_chunk_text(item: dict[str, Any]) -> str:
         parts.append(overview)
 
     text = " ".join(parts)
-    # Defensive bound so /embed never receives oversized input.
+    # Defensive bound so embed never receives oversized input.
     if len(text) > MAX_CHUNK_CHARS:
         text = text[: MAX_CHUNK_CHARS - 1].rstrip() + "\u2026"
     return text

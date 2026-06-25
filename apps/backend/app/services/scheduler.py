@@ -14,7 +14,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from ..config.settings import Settings
-from ..services.broker_client import BrokerClient
+from ..services.ai_provider import EmbeddingsClient
+from ..services.db import Database
 from ..services.jellyfin_client import JellyfinClient
 from ..services.sync_service import run_library_sync
 
@@ -28,21 +29,21 @@ def _make_scheduler() -> AsyncIOScheduler:
     return AsyncIOScheduler(timezone="UTC")
 
 
-async def _job_sync(broker: BrokerClient, jellyfin: JellyfinClient) -> None:
+async def _job_sync(embed: EmbeddingsClient, db: Database, jellyfin: JellyfinClient) -> None:
     log.info("scheduled sync starting")
     try:
-        summary = await run_library_sync(broker, jellyfin)
+        summary = await run_library_sync(embed, db, jellyfin)
         log.info("scheduled sync done: %s", summary.as_dict())
     except Exception as exc:  # never crash the scheduler
         log.warning("scheduled sync failed: %s", exc)
 
 
-async def _job_prune(broker: BrokerClient, settings: Settings) -> None:
+async def _job_prune(db: Database, settings: Settings) -> None:
     if settings.session_ttl_days <= 0:
         return
     older_than = (datetime.now(timezone.utc) - timedelta(days=settings.session_ttl_days)).isoformat()
     try:
-        counts = await broker.sessions_prune(older_than)
+        counts = await db.sessions_prune(older_than)
         log.info("scheduled prune done: %s", counts)
     except Exception as exc:
         log.warning("scheduled prune failed: %s", exc)
@@ -50,7 +51,8 @@ async def _job_prune(broker: BrokerClient, settings: Settings) -> None:
 
 def start_scheduler(app: "FastAPI", settings: Settings) -> AsyncIOScheduler:
     scheduler = _make_scheduler()
-    broker: BrokerClient = app.state.broker
+    embed: EmbeddingsClient = app.state.embed
+    db: Database = app.state.db
     jellyfin: JellyfinClient = app.state.jellyfin
 
     try:
@@ -58,7 +60,7 @@ def start_scheduler(app: "FastAPI", settings: Settings) -> AsyncIOScheduler:
             _job_sync,
             CronTrigger.from_crontab(settings.sync_cron),
             id="sync",
-            args=[broker, jellyfin],
+            args=[embed, db, jellyfin],
             replace_existing=True,
         )
     except Exception as exc:
@@ -69,7 +71,7 @@ def start_scheduler(app: "FastAPI", settings: Settings) -> AsyncIOScheduler:
         _job_prune,
         CronTrigger(hour=4, minute=15),
         id="prune",
-        args=[broker, settings],
+        args=[db, settings],
         replace_existing=True,
     )
 

@@ -15,7 +15,6 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config.settings import Settings, get_settings
 from ..security.jwt import decode_token
-from ..services.broker_client import BrokerClient
 from ..services.jellyfin_client import JellyfinClient
 
 _bearer = HTTPBearer(auto_error=False)
@@ -25,10 +24,6 @@ _bearer = HTTPBearer(auto_error=False)
 class Principal:
     email: str
     role: str
-
-
-def get_broker(request: Request) -> BrokerClient:
-    return request.app.state.broker
 
 
 def get_jellyfin(request: Request) -> JellyfinClient:

@@ -1,25 +1,26 @@
 """Context-budget manager (capability: rag-chat, task 6.1).
 
 Conservative budgets summing to a cap below the model's effective window.
-After /prepare-rag returns chunks + a history window, FastAPI reconciles:
-trim oldest history first based on actual chunk sizes so retrieved context and
-response headroom are preserved.
+FastAPI reconciles retrieved context and response headroom.
 
 Token estimator: char-based heuristic (~4 chars/token). Fast, dependency-free,
 slightly conservative — safe for budgeting. Upgrade path: swap in a real
 Llama tokenizer if drift causes truncation.
+
+Budget arithmetic uses default EMBED_DIM=768 from nomic-embed-text.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from ..config.settings import Settings, get_settings
 
 # Conservative usable input budget. The non-fast llama-3.1-8b-instruct lists a
-# 7,968-token window; the -fast variant's exact cap is pending (OQ-1), so we
-# stay well below it. CONTEXT_CAP - RESPONSE_HEADROOM is the room for prompt.
+# 7,968-token window; the -fast variant's exact cap is pending, so we stay
+# well below it. CONTEXT_CAP - RESPONSE_HEADROOM is the room for prompt.
 CONTEXT_CAP = 6000
-RESPONSE_HEADROOM = 768  # also the explicit max_tokens sent to /llm-stream (task 6.9)
+RESPONSE_HEADROOM = 768  # also the explicit max_tokens sent to LLM stream
 SYSTEM_RESERVE = 512  # prompt template + link instructions headroom
-# How much history we ask the broker to return (FastAPI reconciles further).
+# How much history we request (FastAPI reconciles further).
 HISTORY_REQUEST_BUDGET = 1500
 
 

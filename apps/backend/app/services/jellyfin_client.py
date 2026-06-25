@@ -45,6 +45,30 @@ class JellyfinClient:
         data = await self._get("/Items", params=params)
         return data.get("Items", []) if isinstance(data, dict) else []
 
+    async def primary_image(self, jf_id: str) -> httpx.Response:
+        """Fetch the primary image for an item as a raw binary response.
+
+        Returns the unprocessed `httpx.Response` so the caller can map upstream
+        status codes (e.g. 404 = no primary image vs. 5xx = upstream failure)
+        without conflating them. Only network/timeout errors raise
+        `JellyfinUnreachable`; HTTP error status codes are returned as-is.
+        """
+        # URL-encode the item id defensively (Jellyfin ids are GUID-safe, but
+        # never trust caller input to be path-segment clean).
+        from urllib.parse import quote
+
+        path = f"/Items/{quote(jf_id, safe='')}/Images/Primary"
+        url = f"{self._base}{path}"
+        params = {"maxWidth": "200", "maxHeight": "300", "quality": "90"}
+        try:
+            return await self._client.get(
+                url, params=params, headers=self._headers, timeout=20.0
+            )
+        except httpx.HTTPError as exc:
+            raise JellyfinUnreachable(
+                f"Jellyfin unreachable at {self._base} (Tailscale). {exc}"
+            ) from exc
+
     async def check_reachable(self) -> None:
         """Fail fast with a descriptive error if the homelab is unreachable."""
         try:

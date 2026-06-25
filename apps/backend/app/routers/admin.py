@@ -1,71 +1,77 @@
 """Admin account provisioning (capability: auth).
 
 All routes require the `admin` role. Creating a user hashes the password in
-FastAPI (argon2id) and sends only the opaque `pw_hash` to the broker. Listing
-returns no hashes (broker never returns them on list). Deleting cascades to the
-user's sessions + messages (broker enforces the FK cascade).
+FastAPI (argon2id) and stores only the opaque `pw_hash` in SQLite. Listing
+returns no hashes. Deleting cascades to the user's sessions + messages
+(enforced by SQLite FK cascade).
 """
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, EmailStr, Field
 
-from ..security.deps import Principal, get_broker, require_role
+from ..security.deps import Principal, require_role
 from ..security.passwords import hash_password
-from ..services.broker_client import BrokerError, BrokerClient
+from ..services.db import Database
+
+
+class CreateUserRequest(BaseModel):
+    email: EmailStr = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+    role: str = Field(default="member", pattern="^(admin|member)$")
+
+
+class UpdateUserRequest(BaseModel):
+    role: str | None = Field(None, pattern="^(admin|member)$")
+    password: str | None = None
+
 
 router = APIRouter(tags=["admin"])
+
+
+def get_db(request: Request) -> Database:
+    return request.app.state.db
 
 
 @router.get("/users")
 async def list_users(
     principal: Principal = Depends(require_role("admin")),
-    broker: BrokerClient = Depends(get_broker),
+    db: Database = Depends(get_db),
 ) -> dict[str, Any]:
-    return {"users": await broker.users_list()}
+    return {"users": await db.users_list()}
 
 
 @router.post("/users")
 async def create_user(
-    body: dict,
+    body: CreateUserRequest,
     principal: Principal = Depends(require_role("admin")),
-    broker: BrokerClient = Depends(get_broker),
+    db: Database = Depends(get_db),
 ) -> dict[str, str]:
-    email = str(body.get("email", "")).strip().lower()
-    password = str(body.get("password", ""))
-    role = str(body.get("role", "member"))
-    if not email or not password:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "email and password required")
-    if role not in ("admin", "member"):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "role must be admin|member")
     try:
-        await broker.users_create(email, role, hash_password(password))
-    except BrokerError as exc:
-        if exc.status == 409:
+        await db.users_create(body.email.lower(), body.role, hash_password(body.password))
+    except Exception as exc:
+        if "UNIQUE" in str(exc):
             raise HTTPException(status.HTTP_409_CONFLICT, "user exists")
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "broker error")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "creation failed")
     return {"ok": "created"}
 
 
 @router.put("/users/{email}")
 async def update_user(
     email: str,
-    body: dict,
+    body: UpdateUserRequest,
     principal: Principal = Depends(require_role("admin")),
-    broker: BrokerClient = Depends(get_broker),
+    db: Database = Depends(get_db),
 ) -> dict[str, str]:
-    role = body.get("role")
-    password = body.get("password")
-    if role is None and password is None:
+    if body.role is None and body.password is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "nothing to update")
-    if role is not None and role not in ("admin", "member"):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "role must be admin|member")
-    pw_hash = hash_password(str(password)) if password is not None else None
+    pw_hash = hash_password(str(body.password)) if body.password is not None else None
     try:
-        await broker.users_update(email.lower(), role=role, pw_hash=pw_hash)
-    except BrokerError:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "broker error")
+        await db.users_update(email.lower(), role=body.role, pw_hash=pw_hash)
+    except Exception:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "update failed")
     return {"ok": "updated"}
 
 
@@ -73,10 +79,10 @@ async def update_user(
 async def delete_user(
     email: str,
     principal: Principal = Depends(require_role("admin")),
-    broker: BrokerClient = Depends(get_broker),
+    db: Database = Depends(get_db),
 ) -> dict[str, Any]:
     try:
-        counts = await broker.users_delete(email.lower())
-    except BrokerError:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "broker error")
+        counts = await db.users_delete(email.lower())
+    except Exception:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "delete failed")
     return counts

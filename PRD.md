@@ -1,7 +1,13 @@
 # JellieRAG — Technical Documentation & PRD
 
-> **Status:** MVP design — OpenSpec change `jellirag-mvp` (proposal → design → specs → tasks all complete).
-> This document is the canonical product + technical reference. It supersedes the original draft PRD and reflects all reviewed decisions: broker-Worker credential boundary, **fused `/prepare-rag` two-call hot path**, conversational RAG with context budgeting, incremental sync (two-way set difference), D1 chunk store, **FR-3 deep links re-included via fail-closed Tailscale addresses**, **session-inactivity pruning**, and **app-owned multi-user auth with RBAC** (≤ ~3 family users; admin/member roles; per-owner private history; Cloudflare Access dropped in favor of FastAPI-issued JWTs).
+> **Status:** Pivot to local homelab deployment — OpenSpec change `jellirag-local-pivot` supersedes `jellirag-mvp`.
+> 
+> **IMPORTANT ARCHITECTURE PIVOT:** This document reflects the original VPS+Cloudflare architecture. The project has pivoted to a fully local homelab deployment (LXC + Tailscale serve + Ollama-on-MacBook) with zero Cloudflare dependencies. See the [jellirag-local-pivot proposal](openspec/changes/jellirag-local-pivot/proposal.md) for the current architecture, or refer to the updated [README.md](README.md) for deployment guidance.
+>
+> This document is preserved as historical context for the original design decisions.
+
+> **Original Status:** MVP design — OpenSpec change `jellirag-mvp` (proposal → design → specs → tasks all complete, now superseded).
+> The original canonical product + technical reference reflected all reviewed decisions: broker-Worker credential boundary, **fused `/prepare-rag` two-call hot path**, conversational RAG with context budgeting, incremental sync (two-way set difference), D1 chunk store, **FR-3 deep links re-included via fail-closed Tailscale addresses**, **session-inactivity pruning**, and **app-owned multi-user auth with RBAC** (≤ ~3 family users; admin/member roles; per-owner private history; Cloudflare Access dropped in favor of FastAPI-issued JWTs).
 
 ---
 

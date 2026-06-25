@@ -12,21 +12,21 @@ import logging
 
 from ..config.settings import Settings
 from ..security.passwords import hash_password
-from ..services.broker_client import BrokerClient, BrokerError
+from ..services.db import Database
 
 log = logging.getLogger("jellirag.bootstrap")
 
 
-async def ensure_bootstrap_admin(broker: BrokerClient, settings: Settings) -> None:
+async def ensure_bootstrap_admin(db: Database, settings: Settings) -> None:
     email = (settings.bootstrap_admin_email or "").strip().lower()
     password = settings.bootstrap_admin_password
     if not email or not password:
         return
 
     try:
-        existing = await broker.users_list()
-    except BrokerError as exc:
-        log.warning("bootstrap: cannot reach broker to check users: %s", exc)
+        existing = await db.users_list()
+    except Exception as exc:
+        log.warning("bootstrap: cannot reach db to check users: %s", exc)
         return
 
     if existing:
@@ -35,7 +35,7 @@ async def ensure_bootstrap_admin(broker: BrokerClient, settings: Settings) -> No
         return
 
     try:
-        await broker.users_create(email, "admin", hash_password(password))
+        await db.users_create(email, "admin", hash_password(password))
         log.info("bootstrap: provisioned admin %s", email)
-    except BrokerError as exc:
+    except Exception as exc:
         log.warning("bootstrap: failed to create admin: %s", exc)
